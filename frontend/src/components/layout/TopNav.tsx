@@ -1,0 +1,697 @@
+
+import { useState, useRef, useEffect, lazy, Suspense } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { useAuthStore } from "@/lib/auth";
+import { prefetchRoute } from "@/lib/prefetch";
+import { motion, AnimatePresence } from "framer-motion";
+import { Sparkles, BrainCircuit, ShieldCheck, HelpCircle, BookOpen, Key, AlertTriangle, Cpu, X, Bell, BellRing, CreditCard, Activity } from "lucide-react";
+import Tooltip from "./Tooltip";
+import { useTranslation } from "@/lib/i18n";
+import { toast } from "@/lib/toast";
+import {
+  type MenuItem, type MenuGroup,
+  operationsItems, diagnosticsItems, intelligenceItems, healthcareSystemItems,
+  filterMenuItemsForRole,
+} from "./nav-config";
+import CommandSearch from "./CommandSearch";
+import TelemetryDropdown from "./TelemetryDropdown";
+import LanguageSelector from "./LanguageSelector";
+import ProfileDropdown from "./ProfileDropdown";
+import { useNetworkStatus } from "@/lib/offlineSync";
+
+const MobileDrawer = lazy(() => import("@/components/layout/MobileDrawer"));
+const ShiftHandoffModal = lazy(() => import("@/components/modals/ShiftHandoffModal").then(m => ({ default: m.ShiftHandoffModal })));
+const SoapDenialAuditModal = lazy(() => import("@/components/modals/SoapDenialAuditModal").then(m => ({ default: m.SoapDenialAuditModal })));
+const DischargeSummaryModal = lazy(() => import("@/components/modals/DischargeSummaryModal").then(m => ({ default: m.DischargeSummaryModal })));
+const TelephonyRoutingModal = lazy(() => import("@/components/modals/TelephonyRoutingModal").then(m => ({ default: m.TelephonyRoutingModal })));
+const SecurityLockoutModal = lazy(() => import("@/components/modals/SecurityLockoutModal").then(m => ({ default: m.SecurityLockoutModal })));
+const SelfHealingMaintenanceModal = lazy(() => import("@/components/modals/SelfHealingMaintenanceModal").then(m => ({ default: m.SelfHealingMaintenanceModal })));
+const BillingClaimsModal = lazy(() => import("@/components/modals/BillingClaimsModal").then(m => ({ default: m.BillingClaimsModal })));
+const OnboardingGuideModal = lazy(() => import("@/components/modals/OnboardingGuideModal").then(m => ({ default: m.OnboardingGuideModal })));
+
+/* ═══════════════════════════════════════════════════
+   TopNav Component
+   ═══════════════════════════════════════════════════ */
+export default function TopNav({
+  mobileOpen,
+  setMobileOpen,
+  systemStatus,
+}: {
+  mobileOpen?: boolean;
+  setMobileOpen?: (val: boolean) => void;
+  systemStatus?: string | null;
+}) {
+  const navigate = useNavigate();
+  const { user, logout } = useAuthStore();
+  const { language, setLanguage, t } = useTranslation();
+
+  const { isOnline, queueCount } = useNetworkStatus();
+
+  // Menu & UI state
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [showHandoffModal, setShowHandoffModal] = useState(false);
+  const [showSoapAuditModal, setShowSoapAuditModal] = useState(false);
+  const [showDischargeModal, setShowDischargeModal] = useState(false);
+  const [showTelephonyModal, setShowTelephonyModal] = useState(false);
+  const [showSecurityModal, setShowSecurityModal] = useState(false);
+  const [showHealingModal, setShowHealingModal] = useState(false);
+
+  const [showBillingModal, setShowBillingModal] = useState(false);
+
+  const [alarm, setAlarm] = useState<{ active: boolean; bed?: string; name?: string; hr?: number } | null>(null);
+  const [showNotifications, setShowNotifications] = useState(false);
+
+  const alarmRef = useRef(alarm);
+  useEffect(() => {
+    alarmRef.current = alarm;
+  }, [alarm]);
+
+  useEffect(() => {
+    const handleAlarm = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const newAlarm = customEvent.detail;
+      
+      // Only auto-open on the transition from inactive to active
+      if (newAlarm?.active && !alarmRef.current?.active) {
+        setShowNotifications(true);
+      }
+      
+      setAlarm(newAlarm);
+    };
+    window.addEventListener("clinical-alarm", handleAlarm);
+    return () => window.removeEventListener("clinical-alarm", handleAlarm);
+  }, []);
+
+  const resolveAlarm = (action: "code-blue" | "dismiss") => {
+    window.dispatchEvent(new CustomEvent("resolve-alarm", { detail: { action } }));
+    setShowNotifications(false);
+  };
+
+  // Refs
+  const notificationsRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Click outside notifications dropdown to close it
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        showNotifications &&
+        notificationsRef.current &&
+        !notificationsRef.current.contains(e.target as Node)
+      ) {
+        setShowNotifications(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showNotifications]);
+
+  // Rotating brand statement shown in place of the desktop mega-menu (Sidebar owns navigation on lg+)
+  const BRAND_MESSAGES = [
+    { icon: BrainCircuit, text: "Real-Time Clinical Intelligence" },
+    { icon: Sparkles, text: "Explainable AI \u2022 SHAP-Backed Diagnostics" },
+    { icon: ShieldCheck, text: "Privacy-First \u2022 On-Premises AI Enclave" },
+    { icon: Activity, text: "HL7 / FHIR Interoperability, Natively" },
+  ];
+  const [brandIndex, setBrandIndex] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setBrandIndex((prev) => (prev + 1) % BRAND_MESSAGES.length);
+    }, 4500);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Dynamic menu items and groups computation
+  const dynamicOperationsItems = operationsItems.map(item => {
+    if (item.id === "dashboard") return { ...item, title: t.commandCenter };
+    if (item.id === "patients") return { ...item, title: t.patientRegistry };
+    if (item.id === "capacity") return { ...item, title: t.infrastructure };
+    if (item.id === "telemedicine") return { ...item, title: t.telemedicine };
+    return item;
+  });
+
+  const dynamicIntelligenceItems = intelligenceItems.map(item => {
+    if (item.id === "copilot") return { ...item, title: t.engageCopilot };
+    if (item.id === "architecture") return { ...item, title: t.adminConsole };
+    return item;
+  });
+
+  const dynamicHealthcareSystemItems = healthcareSystemItems.map(item => {
+    return item;
+  });
+
+  const userRole = user?.role || "patient";
+
+  const pickItems = (items: MenuItem[], ids: string[]) => {
+    const allowedIds = new Set(ids);
+    return items.filter((item) => allowedIds.has(item.id));
+  };
+
+  // Staff roles see every Operations module; patients only see what applies to them.
+  const roleOperationsItems = (() => {
+    if (userRole === "admin" || userRole === "doctor" || userRole === "nurse") return dynamicOperationsItems;
+    return pickItems(dynamicOperationsItems, ["dashboard", "telemedicine"]);
+  })();
+
+  const makeGroup = (group: MenuGroup): MenuGroup | null => {
+    if (group.roles && !group.roles.includes(userRole as any)) return null;
+    const items = group.key === "diagnostics" && userRole === "admin"
+      ? group.items
+      : filterMenuItemsForRole(group.items, userRole);
+    if (items.length === 0) return null;
+    return {
+      ...group,
+      items,
+      routes: items.map((item) => item.href),
+      cols: Math.min(group.cols, Math.max(items.length, 1)),
+    };
+  };
+
+  const roleMenuGroups: MenuGroup[] = [
+    {
+      key: "operations",
+      label: language === "es" ? "Operaciones" : language === "hi" ? "संचालन" : "Operations",
+      emoji: "🛰️",
+      accentColor: "text-indigo-400 data-[state=open]:text-indigo-400",
+      items: roleOperationsItems,
+      cols: 2,
+      routes: [],
+    },
+    {
+      key: "diagnostics",
+      label: language === "es" ? "Diagnóstico AI" : language === "hi" ? "निदान AI" : "Diagnostics AI",
+      emoji: "🧬",
+      accentColor: "text-rose-400 data-[state=open]:text-rose-400",
+      items: diagnosticsItems,
+      cols: 2,
+      routes: [],
+      roles: ["admin", "doctor"],
+    },
+    {
+      key: "intelligence",
+      label: language === "es" ? "Inteligencia" : language === "hi" ? "बुद्धिमत्ता" : "Intelligence",
+      emoji: "⚡",
+      accentColor: "text-purple-400 data-[state=open]:text-purple-400",
+      items: dynamicIntelligenceItems,
+      cols: 1,
+      routes: [],
+      roles: ["admin", "doctor", "patient"],
+    },
+    {
+      key: "ai-system",
+      label: language === "es" ? "Sistema AI" : language === "hi" ? "AI सिस्टम" : "AI System",
+      emoji: "🛡️",
+      accentColor: "text-indigo-400 data-[state=open]:text-indigo-400",
+      items: dynamicHealthcareSystemItems,
+      cols: 2,
+      routes: [],
+      roles: ["admin", "doctor", "nurse"],
+    },
+    {
+      key: "patient-system",
+      label: language === "es" ? "Paciente" : language === "hi" ? "रोगी" : "Patient",
+      emoji: "🌿",
+      accentColor: "text-emerald-400 data-[state=open]:text-emerald-400",
+      items: dynamicHealthcareSystemItems,
+      cols: 1,
+      routes: [],
+      roles: ["patient"],
+    },
+  ];
+
+  const dynamicMenuGroups = roleMenuGroups.map(makeGroup).filter(Boolean) as MenuGroup[];
+
+  // Escape key handler to close notifications
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowNotifications(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  useEffect(() => {
+    const toggleTheme = () => {
+      const root = document.documentElement;
+      const currentTheme = root.getAttribute("data-theme");
+
+      if (currentTheme === "light") {
+        root.setAttribute("data-theme", "dark");
+      } else {
+        root.setAttribute("data-theme", "light");
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const isCtrlK = event.ctrlKey && event.key.toLowerCase() === ("k");
+      const isCmdShiftD = event.metaKey && event.shiftKey && event.key.toLowerCase() === ("d");
+      if (isCtrlK || isCmdShiftD) {
+        event.preventDefault();
+        toggleTheme();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
+  return (
+    <>
+      <header
+        className="fixed top-2.5 left-1/2 -translate-x-1/2 w-[calc(100%-1.5rem)] md:w-[calc(100%-3rem)] max-w-[1550px] h-14 z-50 flex items-center px-4 md:px-6 justify-between border border-[var(--border)] bg-[var(--bg-card)] backdrop-blur-2xl rounded-2xl shadow-[var(--shadow-soft)] transition-all duration-300 hover:border-[var(--border-focus)] hover:shadow-[0_4px_30px_rgba(95,95,247,0.08)]"
+        role="banner"
+      >
+        {/* Top glow */}
+        <div
+          className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent)] to-transparent opacity-60"
+          aria-hidden="true"
+        />
+
+        {/* ─── Left: Brand Logo ─── */}
+        <Link
+          to="/dashboard"
+          onMouseEnter={() => prefetchRoute('/dashboard')}
+          className="flex items-center gap-2 shrink-0 group"
+          aria-label="Compunnel Clinical Intelligence Dashboard"
+        >
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[var(--accent)] to-[var(--accent-purple)] flex items-center justify-center text-white shadow-[0_0_12px_rgba(99,102,241,0.25)] group-hover:scale-105 transition-transform duration-200">
+            <Sparkles size={15} aria-hidden="true" />
+          </div>
+          <div className="hidden xl:block">
+            <h1 className="text-xs font-bold text-[var(--text-primary)] tracking-wide uppercase">
+              Compunnel{" "}
+              <span className="text-[var(--text-secondary)] font-normal">Clinical Intelligence</span>
+            </h1>
+          </div>
+        </Link>
+
+
+        {/* ─── Center: Rotating brand statement (Sidebar owns navigation on desktop) ─── */}
+        <div className="hidden lg:flex flex-1 items-center justify-center px-4 overflow-hidden" aria-hidden="true">
+          <AnimatePresence mode="wait">
+            {(() => {
+              const Brand = BRAND_MESSAGES[brandIndex];
+              const BrandIcon = Brand.icon;
+              return (
+                <motion.div
+                  key={brandIndex}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+                  className="flex items-center gap-2"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-pulse shrink-0" />
+                  <BrandIcon size={13} className="text-[var(--accent)] shrink-0" />
+                  <span className="text-[11px] font-bold tracking-wide bg-gradient-to-r from-[var(--accent)] via-[var(--accent-purple)] to-[var(--accent-blue)] bg-clip-text text-transparent animate-gradient-x whitespace-nowrap">
+                    {Brand.text}
+                  </span>
+                </motion.div>
+              );
+            })()}
+          </AnimatePresence>
+        </div>
+
+        {/* ─── Right: Actions ─── */}
+        <div className="flex items-center gap-2 md:gap-3 shrink-0">
+          {systemStatus && (
+            <Tooltip content={systemStatus} position="bottom">
+              <div
+                className="hidden xl:flex items-center gap-1.5 max-w-56 px-2.5 py-1 border border-[var(--warning-border)] bg-[var(--warning-muted)] rounded-lg text-[9px] font-bold tracking-wide text-[var(--warning)] uppercase"
+                role="status"
+                aria-live="polite"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--warning)] shrink-0" />
+                <span className="truncate">Connection degraded</span>
+              </div>
+            </Tooltip>
+          )}
+
+          {/* Offline Queue Indicator (only visible when offline) */}
+          {!isOnline && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 border border-amber-500/20 bg-amber-500/10 rounded-lg text-[10px] font-extrabold tracking-wider uppercase text-amber-500">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+              <span>Offline ({queueCount})</span>
+            </div>
+          )}
+
+          {/* Command Search */}
+          <CommandSearch user={user} />
+
+          {/* Notification Bell Dropdown */}
+          <div ref={notificationsRef} className="relative flex items-center">
+            <Tooltip content={alarm?.active ? "Active Vitals Alarm!" : "Notifications"} position="bottom">
+              <button
+                onClick={() => setShowNotifications(!showNotifications)}
+                className={`relative p-2 rounded-lg border transition-all duration-200 cursor-pointer ${
+                  alarm?.active
+                    ? "bg-red-500/10 border-red-500/30 text-red-500 animate-pulse hover:bg-red-500/20"
+                    : "text-[var(--text-secondary)] hover:text-[var(--accent)] border-transparent hover:border-[var(--border)] hover:bg-white/[0.02]"
+                }`}
+                aria-label="View notifications"
+              >
+                {alarm?.active ? <BellRing size={15} className="animate-bounce" /> : <Bell size={15} />}
+                {alarm?.active && (
+                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500 border-2 border-[var(--bg-card)]" />
+                )}
+              </button>
+            </Tooltip>
+
+            {/* Notifications Popover */}
+            <AnimatePresence>
+              {showNotifications && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute right-0 top-11 w-80 p-4 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] backdrop-blur-2xl shadow-[var(--shadow-hard)] z-50 space-y-3"
+                >
+                  <div className="flex items-center justify-between pb-2 border-b border-white/[0.04]">
+                    <span className="text-[11px] font-black tracking-wider uppercase text-[var(--text-primary)]">Notifications</span>
+                    {alarm?.active && (
+                      <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 text-[8px] font-black tracking-widest uppercase">Critical</span>
+                    )}
+                  </div>
+
+                  {alarm?.active ? (
+                    <div className="space-y-3">
+                      <div className="flex items-start gap-2.5">
+                        <AlertTriangle className="text-red-500 shrink-0 mt-0.5" size={15} />
+                        <div>
+                          <p className="font-extrabold text-[10px] text-red-500 uppercase tracking-wide">Emergency Vitals Alarm</p>
+                          <p className="text-[11px] text-[var(--text-secondary)] mt-1 font-mono leading-relaxed text-left">
+                            {alarm.bed}: {alarm.name} exhibits abnormal heart rate (HR: {alarm.hr} BPM).
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-1.5 pt-2">
+                        <button
+                          onClick={() => resolveAlarm("code-blue")}
+                          className="w-full py-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white text-[9px] font-extrabold tracking-wider uppercase transition-colors cursor-pointer"
+                        >
+                          🚨 Send Emergency Team (Code Blue)
+                        </button>
+                        <button
+                          onClick={() => resolveAlarm("dismiss")}
+                          className="w-full py-1.5 rounded-lg border border-[var(--border)] hover:bg-white/[0.02] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-[9px] font-extrabold tracking-wider uppercase transition-colors cursor-pointer"
+                        >
+                          ❌ Dismiss Alarm
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="py-4 text-center text-[10px] text-[var(--text-dim)] uppercase tracking-wider">
+                      No active alerts
+                    </div>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+
+          {/* Language Selector Dropdown */}
+          <LanguageSelector language={language} setLanguage={setLanguage} />
+
+          {/* Interactive User Guide Toggle */}
+          <Tooltip content="Zero-Learning-Curve Interactive Guide" position="bottom">
+            <button
+              onClick={() => setShowOnboardingModal(true)}
+              className="p-2 text-blue-500 hover:text-blue-400 border border-blue-500/20 hover:border-blue-500/40 bg-blue-500/10 rounded-lg transition-colors cursor-pointer flex items-center justify-center"
+              aria-label="Open Interactive Onboarding Guide"
+            >
+              <Sparkles size={15} className="animate-pulse text-yellow-400" aria-hidden="true" />
+            </button>
+          </Tooltip>
+
+
+          {/* User Profile Dropdown */}
+          {user && (
+            <ProfileDropdown user={user} logout={logout} adminLabel={t.adminConsole} />
+          )}
+
+          {/* Mobile Menu trigger */}
+          <Tooltip content="Open Navigation Menu" position="bottom">
+            <button
+              onClick={() => {
+                if (setMobileOpen) setMobileOpen(true);
+              }}
+              className="lg:hidden p-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border)] hover:border-[var(--border-focus)] bg-white/[0.02] hover:bg-white/[0.05] rounded-lg transition-all cursor-pointer"
+              aria-label="Open mobile menu"
+            >
+              <BrainCircuit size={16} aria-hidden="true" />
+            </button>
+          </Tooltip>
+        </div>
+
+      </header>
+
+      {/* ─── Mobile Drawer ─── */}
+      <AnimatePresence>
+        {mobileOpen && (
+          <Suspense fallback={null}>
+            <MobileDrawer
+              open={mobileOpen}
+              onClose={() => {
+                if (setMobileOpen) setMobileOpen(false);
+              }}
+              setCommandMenuOpen={(val) => {
+                // Integrate with CommandSearch if needed
+              }}
+              dynamicMenuGroups={dynamicMenuGroups}
+              telemetryStats={{ cpu: 12, latency: 22 }}
+              user={user}
+              logout={logout}
+            />
+          </Suspense>
+        )}
+      </AnimatePresence>
+
+      {/* ─── Interactive Guide Drawer ─── */}
+      <AnimatePresence>
+        {guideOpen && (
+          <>
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.5 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setGuideOpen(false)}
+              className="fixed inset-0 z-55 bg-black/60 backdrop-blur-sm gpu-accelerated"
+            />
+            
+            {/* Drawer Container */}
+            <motion.div
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 220 }}
+              className="fixed right-0 top-0 bottom-0 w-[420px] max-w-[95vw] z-55 bg-[var(--bg-secondary)] border-l border-[var(--border)] flex flex-col p-6 overflow-y-auto gpu-accelerated"
+              role="dialog"
+              aria-label="Compunnel Clinical Intelligence Interactive Help Guide"
+            >
+              <div className="flex justify-between items-center border-b border-[var(--border)] pb-4 mb-6">
+                <div className="flex items-center gap-2">
+                  <BookOpen className="text-[var(--accent)]" size={18} />
+                  <h2 className="text-sm font-bold uppercase tracking-wider text-white">
+                    Compunnel Clinical Intelligence Interactive Guide
+                  </h2>
+                </div>
+                <button
+                  onClick={() => setGuideOpen(false)}
+                  className="p-1 text-[var(--text-secondary)] hover:text-white hover:bg-white/[0.04] border border-[var(--border)] rounded cursor-pointer"
+                  aria-label="Close guide"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+
+              <div className="space-y-6 flex-1 text-xs leading-relaxed text-[var(--text-secondary)] text-left">
+                {/* Section 1: AI Clinical Assistants */}
+                <div className="space-y-3">
+                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-[var(--accent)] block">
+                    1. Autonomous Clinical AI Agents
+                  </span>
+                  <div className="space-y-2.5">
+                    <div
+                      onClick={() => {
+                        setGuideOpen(false);
+                        setShowSoapAuditModal(true);
+                      }}
+                      className="bg-white/[0.01] hover:bg-white/[0.04] border border-white/[0.02] hover:border-[var(--accent)] p-3 rounded-lg cursor-pointer transition-all hover:scale-[1.01] duration-200"
+                    >
+                      <h4 className="font-bold text-white uppercase tracking-wider mb-1 flex items-center justify-between">
+                        <span>Billing claim Auditor</span>
+                        <span className="text-[8px] bg-[var(--accent-muted)] text-[var(--accent)] px-1 rounded">Launch ↗</span>
+                      </h4>
+                      <p>Audits SOAP notes and estimates claim denial risk prior to submission. Access under **Invoices &gt; Audit**.</p>
+                    </div>
+                    <div
+                      onClick={() => {
+                        setGuideOpen(false);
+                        setShowHandoffModal(true);
+                      }}
+                      className="bg-white/[0.01] hover:bg-white/[0.04] border border-white/[0.02] hover:border-[var(--accent)] p-3 rounded-lg cursor-pointer transition-all hover:scale-[1.01] duration-200"
+                    >
+                      <h4 className="font-bold text-white uppercase tracking-wider mb-1 flex items-center justify-between">
+                        <span>Shift handoff Coordinator</span>
+                        <span className="text-[8px] bg-[var(--accent-muted)] text-[var(--accent)] px-1 rounded">Launch ↗</span>
+                      </h4>
+                      <p>Aggregates 24h vital observations into shift handoff cards. Access under **Patients &gt; Handoff**.</p>
+                    </div>
+                    <div
+                      onClick={() => {
+                        setGuideOpen(false);
+                        setShowDischargeModal(true);
+                      }}
+                      className="bg-white/[0.01] hover:bg-white/[0.04] border border-white/[0.02] hover:border-[var(--accent)] p-3 rounded-lg cursor-pointer transition-all hover:scale-[1.01] duration-200"
+                    >
+                      <h4 className="font-bold text-white uppercase tracking-wider mb-1 flex items-center justify-between">
+                        <span>Discharge Planner</span>
+                        <span className="text-[8px] bg-[var(--accent-muted)] text-[var(--accent)] px-1 rounded">Launch ↗</span>
+                      </h4>
+                      <p>Synthesizes telemetry and care plans into transition summaries. Access under **Patients &gt; Discharge**.</p>
+                    </div>
+                    <div
+                      onClick={() => {
+                        setGuideOpen(false);
+                        setShowTelephonyModal(true);
+                      }}
+                      className="bg-white/[0.01] hover:bg-white/[0.04] border border-white/[0.02] hover:border-[var(--accent)] p-3 rounded-lg cursor-pointer transition-all hover:scale-[1.01] duration-200"
+                    >
+                      <h4 className="font-bold text-white uppercase tracking-wider mb-1 flex items-center justify-between">
+                        <span>Telephony Alert Routing</span>
+                        <span className="text-[8px] bg-[var(--accent-muted)] text-[var(--accent)] px-1 rounded">Launch ↗</span>
+                      </h4>
+                      <p>Routes urgent telemetry alarms directly to on-call cardiologists via automated voice call scripts.</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 2: Security & Lockout */}
+                <div className="space-y-2.5">
+                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-[var(--accent-purple)] block">
+                    2. Credential Security & Lockouts
+                  </span>
+                  <div
+                    onClick={() => {
+                      setGuideOpen(false);
+                      setShowSecurityModal(true);
+                    }}
+                    className="flex items-start gap-2 bg-white/[0.01] hover:bg-white/[0.04] border border-white/[0.02] hover:border-[var(--accent-purple)] p-3 rounded-lg cursor-pointer transition-all hover:scale-[1.01] duration-200"
+                  >
+                    <Key className="text-[var(--accent-purple)] shrink-0 mt-0.5" size={14} />
+                    <div>
+                      <h4 className="font-bold text-white uppercase tracking-wider mb-1 flex items-center justify-between">
+                        <span>2FA & Profile Lockout</span>
+                        <span className="text-[8px] bg-[var(--accent-purple-muted)] text-[var(--accent-purple)] px-1 rounded">Configure ↗</span>
+                      </h4>
+                      <p>For HIPAA compliance, accounts are locked for 15 minutes after 5 consecutive incorrect passwords. Enforce 2FA in your **Profile Settings**.</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 3: Telemetry & Self-Healing */}
+                <div className="space-y-2.5">
+                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-[var(--success)] block">
+                    3. Self-Healing & Diagnostics
+                  </span>
+                  <div
+                    onClick={() => {
+                      setGuideOpen(false);
+                      setShowHealingModal(true);
+                    }}
+                    className="flex items-start gap-2 bg-white/[0.01] hover:bg-white/[0.04] border border-white/[0.02] hover:border-[var(--success)] p-3 rounded-lg cursor-pointer transition-all hover:scale-[1.01] duration-200"
+                  >
+                    <Cpu className="text-[var(--success)] shrink-0 mt-0.5" size={14} />
+                    <div>
+                      <h4 className="font-bold text-white uppercase tracking-wider mb-1 flex items-center justify-between">
+                        <span>Self-Healing Agent</span>
+                        <span className="text-[8px] bg-[var(--success-muted)] text-[var(--success)] px-1 rounded">Launch ↗</span>
+                      </h4>
+                      <p>The **Self-Healing Agent** checks error buffers and auto-executes database index rebuilding and pruning. Run maintenance instantly from the **Data Engineering Console**.</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 4: Billing & 837P Claims */}
+                <div className="space-y-2.5">
+                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-emerald-400 block">
+                    4. Patient Billing & Claims
+                  </span>
+                  <div
+                    onClick={() => {
+                      setGuideOpen(false);
+                      setShowBillingModal(true);
+                    }}
+                    className="flex items-start gap-2 bg-white/[0.01] hover:bg-white/[0.04] border border-white/[0.02] hover:border-emerald-500 p-3 rounded-lg cursor-pointer transition-all hover:scale-[1.01] duration-200"
+                  >
+                    <CreditCard className="text-emerald-400 shrink-0 mt-0.5" size={14} />
+                    <div>
+                      <h4 className="font-bold text-white uppercase tracking-wider mb-1 flex items-center justify-between">
+                        <span>Patient Billing Portal</span>
+                        <span className="text-[8px] bg-emerald-500/20 text-emerald-400 px-1 rounded">Open ↗</span>
+                      </h4>
+                      <p>View itemized encounter invoices, submit electronic ANSI 837P insurance claims, and process HSA/FSA patient co-pay payments online.</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-2.5">
+                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-cyan-400 block">
+                    4. Navigation Hotkeys
+                  </span>
+                  <div className="bg-zinc-950/60 border border-[var(--border)] p-3 rounded-lg font-mono text-[10px] space-y-1.5 uppercase">
+                    <div className="flex justify-between">
+                      <span>Quick Search Panel</span>
+                      <kbd className="border border-white/[0.08] px-1 rounded bg-white/[0.02]">⌘K</kbd>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Interactive Help Guide</span>
+                      <span>Click Help Circle</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* ── Clinical Action Modals ── */}
+      <Suspense fallback={null}>
+        <AnimatePresence>
+          {showHandoffModal && (
+            <ShiftHandoffModal onClose={() => setShowHandoffModal(false)} />
+          )}
+          {showSoapAuditModal && (
+            <SoapDenialAuditModal onClose={() => setShowSoapAuditModal(false)} />
+          )}
+          {showDischargeModal && (
+            <DischargeSummaryModal onClose={() => setShowDischargeModal(false)} />
+          )}
+          {showTelephonyModal && (
+            <TelephonyRoutingModal onClose={() => setShowTelephonyModal(false)} />
+          )}
+          {showSecurityModal && (
+            <SecurityLockoutModal onClose={() => setShowSecurityModal(false)} />
+          )}
+          {showHealingModal && (
+            <SelfHealingMaintenanceModal onClose={() => setShowHealingModal(false)} />
+          )}
+          {showBillingModal && (
+            <BillingClaimsModal onClose={() => setShowBillingModal(false)} />
+          )}
+          {showOnboardingModal && (
+            <OnboardingGuideModal isOpen={showOnboardingModal} onClose={() => setShowOnboardingModal(false)} />
+          )}
+        </AnimatePresence>
+      </Suspense>
+    </>
+
+  );
+}

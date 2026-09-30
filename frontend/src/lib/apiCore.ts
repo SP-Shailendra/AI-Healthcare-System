@@ -1,0 +1,141 @@
+/**
+ * Compunnel Clinical Intelligence — Core API Client
+ *
+ * Shared fetch wrapper, auth helpers, and base configuration.
+ * Domain-specific API functions are in the sub-modules:
+ *   - apiAuth.ts
+ *   - apiChat.ts
+ *   - apiPredictions.ts
+ *   - apiHospital.ts
+ *   - apiAdmin.ts
+ *   - apiBilling.ts
+ */
+
+import { ApiConnectionError } from './apiErrors';
+
+const getApiBase = () => {
+  const envVal = import.meta.env.NEXT_PUBLIC_API_URL || import.meta.env.VITE_PUBLIC_API_URL;
+  if (envVal) return `${envVal.replace(/\/$/, '')}/v1`;
+  if (import.meta.env.DEV) return '/v1';
+  if (typeof window !== 'undefined') {
+    if (window.location.port === '3000' && (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')) {
+      return `${window.location.protocol}//${window.location.hostname}:8001/v1`;
+    }
+    return `${window.location.origin}/v1`;
+  }
+  return '/v1';
+};
+export const API_BASE = getApiBase();
+
+export function getWebSocketUrl(path: string): string {
+  if (API_BASE.startsWith('/')) {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+    return `${wsProtocol}://${window.location.host}${cleanPath}`;
+  }
+  const cleanBase = API_BASE.replace(/\/v1$/, '').replace(/\/$/, '');
+  const wsProtocol = cleanBase.startsWith('https') ? 'wss' : 'ws';
+  const cleanHost = cleanBase.replace(/^https?:\/\//, '');
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  return `${wsProtocol}://${cleanHost}${cleanPath}`;
+}
+
+
+// ── Auth Store Access ────────────────────────────────────────────
+let getToken: (() => string | null) | null = null;
+
+export function setTokenGetter(fn: () => string | null) {
+  getToken = fn;
+}
+
+export function authHeaders(): Record<string, string> {
+  const token = getToken?.();
+  if (token) return { Authorization: `Bearer ${token}` };
+  return {};
+}
+
+export function redirectToLogin() {
+  if (typeof window === 'undefined' || window.location.pathname === '/login') return;
+  window.history.replaceState({}, '', '/login');
+  window.dispatchEvent(new PopStateEvent('popstate'));
+}
+
+// ── In-Memory Request Cache ──────────────────────────────────────
+interface CacheEntry {
+  data: any;
+  timestamp: number;
+}
+const requestCache = new Map<string, CacheEntry>();
+const CACHE_TTL = 10000; // 10 seconds cache TTL
+
+// ── Generic Fetch Wrapper ────────────────────────────────────────
+export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const method = (options.method || 'GET').toUpperCase();
+  const isGet = method === 'GET';
+  const isTest = import.meta.env.MODE === 'test';
+  const cacheKey = `${path}:${JSON.stringify(options.headers || {})}`;
+
+  if (isGet && !isTest) {
+    const entry = requestCache.get(cacheKey);
+    if (entry && Date.now() - entry.timestamp < CACHE_TTL) {
+      return entry.data as T;
+    }
+    // Invalidate the entire cache on any write mutation (POST, PUT, DELETE)
+    requestCache.clear();
+  }
+
+  const fetchOptions: RequestInit = {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      ...(options.headers || {}),
+    },
+  };
+  if (options.signal) {
+    fetchOptions.signal = options.signal;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, fetchOptions);
+  } catch {
+    const error = new ApiConnectionError(path);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('global-api-error', { detail: { error, kind: 'connection' } }));
+    }
+    throw error;
+  }
+
+
+
+  if (res.status === 401) {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('healthcare-auth');
+      window.dispatchEvent(new CustomEvent('auth-session-expired'));
+      redirectToLogin();
+    }
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    let errorMessage = `API Error: ${res.status}`;
+    if (body.detail) {
+      if (typeof body.detail === 'string') {
+        errorMessage = body.detail;
+      } else if (Array.isArray(body.detail)) {
+        errorMessage = body.detail.map((e: { msg: string; loc?: string[]; type?: string }) => e.msg).join(", ");
+      } else {
+        errorMessage = JSON.stringify(body.detail);
+      }
+    }
+    const error = new Error(errorMessage);
+    throw error;
+  }
+
+  const data = await res.json();
+  if (isGet) {
+    requestCache.set(cacheKey, { data, timestamp: Date.now() });
+  }
+  return data;
+}
